@@ -95,65 +95,77 @@ def preprocess_text_pipeline(text):
     lemmatized = lemmatize_tokens(tokens)
     return " ".join(lemmatized)
 
-# --- Model Loading and Prediction (Mocked for now) ---
+# --- Global variables for tokenizer, model, and label_encoder ---
+tokenizer = None
+model = None
+label_encoder = None
+MAX_SEQUENCE_LENGTH = 100 # Default, will be updated based on data
+MODEL_INITIALIZED = False
 
-# In a real application, you would load your trained tokenizer, model, and LabelEncoder here.
-# Example:
-# try:
-#     with open('tokenizer.pkl', 'rb') as f:
-#         tokenizer = pickle.load(f)
-#     model = tf.keras.models.load_model('rnn_model.h5')
-#     with open('label_encoder.pkl', 'rb') as f:
-#         label_encoder = pickle.load(f)
-#     MAX_SEQUENCE_LENGTH = model.input_shape[1] # Or a predefined constant
-#     VOCAB_SIZE = len(tokenizer.word_index) + 1 # Or a predefined constant
-#     MODEL_LOADED = True
-# except Exception as e:
-#     st.error(f"Error loading model components: {e}. Please ensure 'tokenizer.pkl', 'rnn_model.h5', and 'label_encoder.pkl' are in the same directory.")
-#     MODEL_LOADED = False
+# --- Model Initialization on App Startup ---
+# This function will load data, fit the tokenizer/encoder, and define the model.
+# In a production app, you would load pre-trained artifacts.
+@st.cache_resource
+def initialize_model_components():
+    global tokenizer, model, label_encoder, MAX_SEQUENCE_LENGTH, MODEL_INITIALIZED
 
-# Mock data and model components for demonstration
-# In a real scenario, you would train these from your dataset (True.csv)
-# For demonstration purposes, let's create a dummy tokenizer and encoder
-# based on a small sample of expected words.
-dummy_texts = [
-    "the head of a conservative republican faction in the us congress",
-    "transgender people will be allowed for the first time to enlist in the us military",
-    "the special counsel investigation of links between russia and president trumps election campaign",
-    "trump campaign adviser george papadopoulos told an australian diplomat",
-    "president donald trump called on the us postal service on friday",
-    "nato allies on tuesday welcomed president donald trump",
-    "lexisnexis a provider of legal regulatory and business information",
-    "in the shadow of disused soviet era factories"
-]
-tokenizer = Tokenizer(num_words=10000, oov_token="<unk>") # A reasonable vocabulary size
-tokenizer.fit_on_texts(dummy_texts) # Fit on some representative text
-MAX_SEQUENCE_LENGTH = 100 # Example max sequence length
+    st.write("Initializing model components... This may take a moment.")
+    
+    try:
+        # Load the dataset
+        df = pd.read_csv("True.csv")
+        
+        # Preprocess the text column
+        df['processed_text'] = df['text'].apply(preprocess_text_pipeline)
+        
+        # Initialize and fit Tokenizer
+        # num_words can be adjusted, 10000 is a common starting point
+        tokenizer = Tokenizer(num_words=10000, oov_token="<unk>")
+        tokenizer.fit_on_texts(df['processed_text'])
 
-label_encoder = LabelEncoder()
-label_encoder.fit(['politicsNews', 'worldnews']) # Fit on your actual classes
+        # Determine MAX_SEQUENCE_LENGTH
+        # Use the average or a percentile of sequence lengths for practical purposes
+        # For simplicity, we'll keep a fixed value, but in real scenario, it should be
+        # based on training data statistics
+        # max_len = max([len(x.split()) for x in df['processed_text']])
+        # MAX_SEQUENCE_LENGTH = min(max_len, 250) # Cap at 250 words or actual max_len
 
-# Create a dummy RNN model structure for demonstration.
-# In a real app, you'd load your actual trained model.
-model = Sequential([
-    Embedding(input_dim=len(tokenizer.word_index) + 1, output_dim=128, input_length=MAX_SEQUENCE_LENGTH),
-    LSTM(128, return_sequences=True),
-    Dropout(0.3),
-    LSTM(64),
-    Dropout(0.3),
-    Dense(64, activation='relu'),
-    Dropout(0.3),
-    Dense(len(label_encoder.classes_), activation='softmax')
-])
-model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
-MODEL_LOADED = True # Set to True because we're mocking it
+        # Initialize and fit LabelEncoder
+        label_encoder = LabelEncoder()
+        label_encoder.fit(df['subject'].unique()) # Fit on all unique subjects
+
+        VOCAB_SIZE = len(tokenizer.word_index) + 1
+        NUM_CLASSES = len(label_encoder.classes_)
+
+        # Define the RNN model structure (without training)
+        # This structure matches the one implied by your notebook's classification report
+        model = Sequential([
+            Embedding(input_dim=VOCAB_SIZE, output_dim=128, input_length=MAX_SEQUENCE_LENGTH),
+            LSTM(128, return_sequences=True),
+            Dropout(0.3),
+            LSTM(64),
+            Dropout(0.3),
+            Dense(64, activation='relu'),
+            Dropout(0.3),
+            Dense(NUM_CLASSES, activation='softmax')
+        ])
+        model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+
+        MODEL_INITIALIZED = True
+        st.success("Model components initialized successfully! You can now classify articles.")
+
+    except Exception as e:
+        st.error(f"Error initializing model components. Please ensure 'True.csv' is in the same directory. Error: {e}")
+        MODEL_INITIALIZED = False
+
+initialize_model_components() # Call the initialization function
 
 def predict_news_type(text):
     """
     Predicts the news type using the loaded model.
     """
-    if not MODEL_LOADED:
-        return "Model not loaded. Cannot make predictions."
+    if not MODEL_INITIALIZED:
+        return "Model not ready. Please wait for initialization or check for errors."
 
     processed_text = preprocess_text_pipeline(text)
     
@@ -161,6 +173,8 @@ def predict_news_type(text):
     sequence = tokenizer.texts_to_sequences([processed_text])
     padded_sequence = pad_sequences(sequence, maxlen=MAX_SEQUENCE_LENGTH)
     
+    # Predict with the model
+    # Note: If the model hasn't been truly trained, predictions will be random.
     prediction = model.predict(padded_sequence)[0]
     predicted_class_index = np.argmax(prediction)
     predicted_label = label_encoder.inverse_transform([predicted_class_index])[0]
@@ -234,27 +248,30 @@ user_input = st.text_area(
     "Enter the news article text here:",
     height=250,
     placeholder="Paste your news article here...",
+    key="news_input" # Added a key for better re-rendering
 )
 
 if st.button("Classify Article"):
     if user_input:
-        # Preprocess the text
-        with st.spinner("Preprocessing and classifying..."):
-            predicted_label, confidence = predict_news_type(user_input)
+        if MODEL_INITIALIZED:
+            # Preprocess the text
+            with st.spinner("Preprocessing and classifying..."):
+                predicted_label, confidence = predict_news_type(user_input)
+                
+            st.markdown(f'<div class="prediction-box"><h3>Prediction: <span style="color:#2196F3;">{predicted_label}</span></h3></div>', unsafe_allow_html=True)
             
-        st.markdown(f'<div class="prediction-box"><h3>Prediction: <span style="color:#2196F3;">{predicted_label}</span></h3></div>', unsafe_allow_html=True)
-        
-        st.markdown('<div class="confidence-box"><h4>Confidence Scores:</h4>', unsafe_allow_html=True)
-        for label, prob in confidence.items():
-            st.markdown(f'- **{label}**: {prob:.2%}')
-        st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown('<div class="confidence-box"><h4>Confidence Scores:</h4>', unsafe_allow_html=True)
+            for label, prob in confidence.items():
+                st.markdown(f'- **{label}**: {prob:.2%}')
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        st.subheader("Preprocessed Text:")
-        st.info(preprocess_text_pipeline(user_input))
+            st.subheader("Preprocessed Text:")
+            st.info(preprocess_text_pipeline(user_input))
+        else:
+            st.warning("Model components are still initializing or encountered an error. Please wait or refresh.")
     else:
         st.warning("Please enter some text to classify.")
 
 st.markdown("---")
-st.markdown("This app uses a text classification model. The prediction is based on the trained model and the preprocessing steps derived from your Jupyter Notebook.")
-st.markdown("For a real-world application, you would train and save your actual TensorFlow/Keras model and tokenizer, then load them into this Streamlit app.")
+st.markdown("This app uses a text classification model. The tokenizer and label encoder are fitted on the provided `True.csv` dataset upon startup, and a Keras RNN model structure is defined. **Note: The model itself is *not* trained on the data within this Streamlit app due to performance considerations; only its structure is set up.** For production, you would pre-train and save your model and related artifacts.")
 
